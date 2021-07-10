@@ -2,7 +2,7 @@ package com.plcoding.doodlekong.data.remote.ws
 
 data class Room(
     val name: String,
-    val maxPlayer: Int,
+    val maxPlayers: Int,
     val playerCount: Int =1,
 ) {
 
