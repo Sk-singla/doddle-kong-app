@@ -9,12 +9,15 @@ import androidx.navigation.fragment.findNavController
 import com.plcoding.doodlekong.R
 import com.plcoding.doodlekong.databinding.FragmentUsernameBinding
 import com.plcoding.doodlekong.ui.setup.SetupViewModel
+import com.plcoding.doodlekong.util.Constants.MAX_USERNAME_LENGTH
+import com.plcoding.doodlekong.util.Constants.MIN_USERNAME_LENGTH
+import com.plcoding.doodlekong.util.navigateSafely
 import com.plcoding.doodlekong.util.snackbar
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.collect
 
 @AndroidEntryPoint
-class UsernameFragment: Fragment() {
+class UsernameFragment: Fragment(R.layout.fragment_username) {
 
     private var _binding: FragmentUsernameBinding? = null
     private val binding: FragmentUsernameBinding
@@ -40,10 +43,9 @@ class UsernameFragment: Fragment() {
             viewModel.setupEvent.collect { event ->
                 when(event) {
                     is SetupViewModel.SetupEvent.NavigateToSelectRoomEvent -> {
-                        findNavController().navigate(
-                            UsernameFragmentDirections.actionUsernameFragmentToSelectRoomFragment(
-                                event.username
-                            )
+                        findNavController().navigateSafely(
+                            R.id.action_usernameFragment_to_selectRoomFragment,
+                            args = Bundle().apply { putString("username",event.username) }
                         )
                     }
 
@@ -51,14 +53,12 @@ class UsernameFragment: Fragment() {
                         snackbar(R.string.error_field_empty)
                     }
                     is SetupViewModel.SetupEvent.InputTooShortError -> {
-                        snackbar(R.string.error_username_too_short)
+                        snackbar(getString(R.string.error_username_too_short, MIN_USERNAME_LENGTH))
                     }
                     is SetupViewModel.SetupEvent.InputTooLongError -> {
-                        snackbar(R.string.error_username_too_long)
+                        snackbar(getString(R.string.error_username_too_long, MAX_USERNAME_LENGTH))
                     }
-                    else -> {
-
-                    }
+                    else -> Unit
                 }
 
             }
