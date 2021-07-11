@@ -11,7 +11,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent">
 
-        <View
+        <com.plcoding.doodlekong.ui.views.DrawingView
             android:id="@+id/drawingView"
             android:layout_width="match_parent"
             android:layout_height="0dp"
@@ -87,6 +87,16 @@
             app:layout_constraintStart_toEndOf="@+id/colorGroup"
             app:layout_constraintTop_toTopOf="@+id/colorGroup"
             app:srcCompat="@drawable/ic_baseline_undo_24" />
+
+        <ImageButton
+            android:id="@+id/ibRedo"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@android:color/transparent"
+            app:layout_constraintBottom_toBottomOf="@id/colorGroup"
+            app:layout_constraintStart_toEndOf="@+id/ibUndo"
+            app:layout_constraintTop_toTopOf="@+id/colorGroup"
+            app:srcCompat="@drawable/ic_baseline_redo_24" />
 
         <ProgressBar
             android:id="@+id/roundTimerProgressBar"
