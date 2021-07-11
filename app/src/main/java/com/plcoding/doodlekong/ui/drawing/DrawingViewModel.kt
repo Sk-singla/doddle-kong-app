@@ -5,11 +5,14 @@ import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
 import com.plcoding.doodlekong.R
 import com.plcoding.doodlekong.data.remote.ws.DrawingApi
+import com.plcoding.doodlekong.data.remote.ws.Room
 import com.plcoding.doodlekong.data.remote.ws.models.*
 import com.plcoding.doodlekong.data.remote.ws.models.DrawAction.Companion.ACTION_UNDO
+import com.plcoding.doodlekong.util.CoroutineTimer
 import com.plcoding.doodlekong.util.DispatcherProvider
 import com.tinder.scarlet.WebSocket
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -35,6 +38,18 @@ class DrawingViewModel @Inject constructor(
 
     }
 
+    private val _phase = MutableStateFlow(PhaseChange(null,0L))
+    val phase: StateFlow<PhaseChange> = _phase
+
+    private val _phaseTime = MutableStateFlow(0L)
+    val phaseTime: StateFlow<Long> = _phaseTime
+
+    private val _newWords = MutableStateFlow(NewWords(listOf()))
+    val newWords: StateFlow<NewWords> = _newWords
+
+    private val _chat = MutableStateFlow<List<BaseModel>>(listOf())
+    val chat: StateFlow<List<BaseModel>> = _chat
+
     private val _selectedColorButtonId = MutableStateFlow(R.id.rbBlack)
     val selectedColorButtonId: StateFlow<Int> = _selectedColorButtonId
 
@@ -50,6 +65,9 @@ class DrawingViewModel @Inject constructor(
     private val socketEventChannel = Channel<SocketEvent>()
     val socketEvent = socketEventChannel.receiveAsFlow().flowOn(dispatchers.io)
 
+    private val timer = CoroutineTimer()
+    private var timerJob: Job? = null
+
 
     fun checkRadioButton(id: Int) {
         _selectedColorButtonId.value = id
@@ -59,6 +77,21 @@ class DrawingViewModel @Inject constructor(
         observeBaseModels()
         observeEvents()
     }
+
+    private fun setTimer(duration:Long){
+        timerJob?.cancel()
+        timerJob = timer.timeAndEmit(
+            duration,
+            viewModelScope
+        ){
+            _phaseTime.value = it
+        }
+    }
+
+    fun cancelTiimer(){
+        timerJob?.cancel()
+    }
+
 
     fun setChooseWordOverlayVisibility(isVisible:Boolean) {
         _chooseWordOverlayVisible.value = isVisible
@@ -90,6 +123,28 @@ class DrawingViewModel @Inject constructor(
                     }
                     is GameError -> socketEventChannel.send(SocketEvent.GameErrorEvent(data))
                     is Ping -> sendBaseModel(Ping())
+                    is ChatMessage -> {
+                        socketEventChannel.send(SocketEvent.ChatMessageEvent(data))
+                    }
+                    is Announcement -> {
+                        socketEventChannel.send(SocketEvent.AnnouncementEvent(data))
+                    }
+                    is NewWords -> {
+                        _newWords.value = data
+                        socketEventChannel.send(SocketEvent.NewWordsEvent(data))
+                    }
+                    is ChosenWord -> {
+                        socketEventChannel.send(SocketEvent.ChosenWordEvent(data))
+                    }
+                    is PhaseChange -> {
+                        data.phase?.let {
+                            _phase.value = data
+                        }
+                        _phaseTime.value = data.time
+                        if(data.phase != Room.Phase.WAITING_FOR_PLAYERS){
+                            setTimer(data.time)
+                        }
+                    }
                 }
             }
         }
@@ -99,6 +154,19 @@ class DrawingViewModel @Inject constructor(
         viewModelScope.launch(dispatchers.io) {
             drawingApi.sendBaseModel(data)
         }
+    }
+    fun sendChatMessage(message: ChatMessage) {
+        if(message.message.trim().isEmpty()){
+            return
+        }
+        viewModelScope.launch(dispatchers.io) {
+            drawingApi.sendBaseModel(message)
+        }
+    }
+
+    fun chooseWord(word:String, roomName: String){
+        val chosenWord = ChosenWord(word,roomName)
+        sendBaseModel(chosenWord)
     }
 
 }

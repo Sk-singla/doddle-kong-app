@@ -258,6 +258,19 @@ class DrawingView @JvmOverloads constructor(
     }
 
 
+    fun finishOffDrawing() {
+        isDrawing = false
+        path.lineTo(curX ?: return,curY ?: return)
+        canvas?.drawPath(path,paint)
+        paths.push(PathData(path,paint.color,paint.strokeWidth))
+        pathDataChangedListener?.let { change ->
+            change(paths)
+        }
+        path = Path()
+        invalidate()
+    }
+
+
 
     data class PathData(val path: Path,val color: Int, val thickness: Float)
 
