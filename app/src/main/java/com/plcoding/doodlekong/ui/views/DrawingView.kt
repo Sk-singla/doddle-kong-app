@@ -6,6 +6,10 @@ import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.MotionEvent.*
 import android.view.View
+import com.plcoding.doodlekong.data.remote.ws.models.BaseModel
+import com.plcoding.doodlekong.data.remote.ws.models.DrawAction
+import com.plcoding.doodlekong.data.remote.ws.models.DrawAction.Companion.ACTION_REDO
+import com.plcoding.doodlekong.data.remote.ws.models.DrawAction.Companion.ACTION_UNDO
 import com.plcoding.doodlekong.data.remote.ws.models.DrawData
 import com.plcoding.doodlekong.util.Constants
 import java.lang.IllegalStateException
@@ -92,12 +96,14 @@ class DrawingView @JvmOverloads constructor(
         parseDrawData(drawData).apply {
             paint.color = color
             paint.strokeWidth = thickness
-            paint.reset()
+            path.reset()
             path.moveTo(fromX,fromY)
             invalidate()
             startedTouch = true
         }
     }
+
+    // todo: check username exist or not while registering user
 
     fun moveTouchExternally(drawData: DrawData) {
         parseDrawData(drawData).apply {
@@ -224,6 +230,10 @@ class DrawingView @JvmOverloads constructor(
         )
     }
 
+    fun setPath(pathData: Stack<PathData>) {
+        this.paths = pathData
+    }
+
     fun setThickness(thickness: Float){
         paint.strokeWidth = thickness
     }
@@ -235,6 +245,26 @@ class DrawingView @JvmOverloads constructor(
     fun clear(){
         canvas?.drawColor(Color.TRANSPARENT,PorterDuff.Mode.MULTIPLY)
         paths.clear()
+    }
+
+    fun update(drawActions: List<BaseModel>){
+        drawActions.forEach { drawAction ->
+            when(drawAction) {
+                is DrawData -> {
+                    when(drawAction.motionEvent) {
+                        ACTION_DOWN -> startedTouchExternally(drawAction)
+                        ACTION_MOVE -> moveTouchExternally(drawAction)
+                        ACTION_UP -> releaseTouchExternally(drawAction)
+                    }
+                }
+                is DrawAction -> {
+                    when(drawAction.action) {
+                        ACTION_UNDO -> undo()
+                        ACTION_REDO -> redo()
+                    }
+                }
+            }
+        }
     }
 
     fun undo(){
@@ -252,8 +282,11 @@ class DrawingView @JvmOverloads constructor(
         if(!undoPaths.empty()) {
             undoPaths.pop()?.let {
                 paths.push(it)
-                invalidate()
             }
+            pathDataChangedListener?.let { change->
+                change(paths)
+            }
+            invalidate()
         }
     }
 

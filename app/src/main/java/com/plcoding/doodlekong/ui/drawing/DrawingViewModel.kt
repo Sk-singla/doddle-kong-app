@@ -3,11 +3,16 @@ package com.plcoding.doodlekong.ui.drawing
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
+import com.google.gson.JsonParser
 import com.plcoding.doodlekong.R
 import com.plcoding.doodlekong.data.remote.ws.DrawingApi
 import com.plcoding.doodlekong.data.remote.ws.Room
 import com.plcoding.doodlekong.data.remote.ws.models.*
+import com.plcoding.doodlekong.data.remote.ws.models.DrawAction.Companion.ACTION_REDO
 import com.plcoding.doodlekong.data.remote.ws.models.DrawAction.Companion.ACTION_UNDO
+import com.plcoding.doodlekong.ui.views.DrawingView
+import com.plcoding.doodlekong.util.Constants.TYPE_DRAW_ACTION
+import com.plcoding.doodlekong.util.Constants.TYPE_DRAW_DATA
 import com.plcoding.doodlekong.util.CoroutineTimer
 import com.plcoding.doodlekong.util.DispatcherProvider
 import com.tinder.scarlet.WebSocket
@@ -16,6 +21,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import java.util.*
 import javax.inject.Inject
 
 @HiltViewModel
@@ -32,11 +38,15 @@ class DrawingViewModel @Inject constructor(
         data class DrawDataEvent(val data: DrawData): SocketEvent()
         data class NewWordsEvent(val data: NewWords): SocketEvent()
         data class GameErrorEvent(val data: GameError): SocketEvent()
-        data class RoundDrawInfoEvent(val data: RoundDrawInfo): SocketEvent()
+        data class RoundDrawInfoEvent(val data: List<BaseModel>): SocketEvent()
         data class ChosenWordEvent(val data: ChosenWord): SocketEvent()
         object UndoEvent: SocketEvent()
+        object RedoEvent: SocketEvent()
 
     }
+
+    private val _pathData = MutableStateFlow(Stack<DrawingView.PathData>())
+    val pathData: StateFlow<Stack<DrawingView.PathData>> = _pathData
 
     private val _phase = MutableStateFlow(PhaseChange(null,0L))
     val phase: StateFlow<PhaseChange> = _phase
@@ -44,8 +54,14 @@ class DrawingViewModel @Inject constructor(
     private val _phaseTime = MutableStateFlow(0L)
     val phaseTime: StateFlow<Long> = _phaseTime
 
+    private val _gameState = MutableStateFlow(GameState("",""))
+    val gameState: StateFlow<GameState> = _gameState
+
     private val _newWords = MutableStateFlow(NewWords(listOf()))
     val newWords: StateFlow<NewWords> = _newWords
+
+    private val _players = MutableStateFlow<List<PlayerData>>(listOf())
+    val players: StateFlow<List<PlayerData>> = _players
 
     private val _chat = MutableStateFlow<List<BaseModel>>(listOf())
     val chat: StateFlow<List<BaseModel>> = _chat
@@ -53,11 +69,14 @@ class DrawingViewModel @Inject constructor(
     private val _selectedColorButtonId = MutableStateFlow(R.id.rbBlack)
     val selectedColorButtonId: StateFlow<Int> = _selectedColorButtonId
 
-    private val _connectionProgressBarVisible = MutableStateFlow(false)
+    private val _connectionProgressBarVisible = MutableStateFlow(true)
     val connectionProgressBarVisible: StateFlow<Boolean> = _connectionProgressBarVisible
 
     private val _chooseWordOverlayVisible = MutableStateFlow(false)
     val chooseWordOverlayVisible: StateFlow<Boolean> = _chooseWordOverlayVisible
+
+    private val _speechToTextEnabled = MutableStateFlow(false)
+    val speechToTextEnabled: StateFlow<Boolean> = _speechToTextEnabled
 
     private val connectionEventChannel = Channel<WebSocket.Event>()
     val connectionEvent = connectionEventChannel.receiveAsFlow().flowOn(dispatchers.io)
@@ -92,6 +111,10 @@ class DrawingViewModel @Inject constructor(
         timerJob?.cancel()
     }
 
+    fun setPathData(stack: Stack<DrawingView.PathData>){
+        _pathData.value = stack
+    }
+
 
     fun setChooseWordOverlayVisibility(isVisible:Boolean) {
         _chooseWordOverlayVisible.value = isVisible
@@ -119,7 +142,25 @@ class DrawingViewModel @Inject constructor(
                     is DrawAction -> {
                         when(data.action) {
                             ACTION_UNDO -> socketEventChannel.send(SocketEvent.UndoEvent)
+                            ACTION_REDO -> socketEventChannel.send(SocketEvent.RedoEvent)
                         }
+                    }
+                    is RoundDrawInfo -> {
+                        val drawActions = mutableListOf<BaseModel>()
+                        data.data.forEach { drawAction->
+                            val jsonObjects = JsonParser.parseString(drawAction).asJsonObject
+                            val type = when(jsonObjects.get("type").asString) {
+                                TYPE_DRAW_DATA -> DrawData::class.java
+                                TYPE_DRAW_ACTION -> DrawAction::class.java
+                                else -> BaseModel::class.java
+                            }
+                            drawActions.add(gson.fromJson(drawAction,type))
+                        }
+                        socketEventChannel.send(SocketEvent.RoundDrawInfoEvent(drawActions))
+                    }
+                    is GameState -> {
+                        _gameState.value = data
+                        socketEventChannel.send(SocketEvent.GameStateEvent(data))
                     }
                     is GameError -> socketEventChannel.send(SocketEvent.GameErrorEvent(data))
                     is Ping -> sendBaseModel(Ping())
@@ -128,6 +169,9 @@ class DrawingViewModel @Inject constructor(
                     }
                     is Announcement -> {
                         socketEventChannel.send(SocketEvent.AnnouncementEvent(data))
+                    }
+                    is PlayersList -> {
+                        _players.value = data.playerDataList
                     }
                     is NewWords -> {
                         _newWords.value = data
@@ -162,6 +206,17 @@ class DrawingViewModel @Inject constructor(
         viewModelScope.launch(dispatchers.io) {
             drawingApi.sendBaseModel(message)
         }
+    }
+
+    fun startListening() {
+        _speechToTextEnabled.value = true
+    }
+    fun stopListening() {
+        _speechToTextEnabled.value = false
+    }
+
+    fun disconnect() {
+        sendBaseModel(DisconnectRequest())
     }
 
     fun chooseWord(word:String, roomName: String){

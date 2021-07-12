@@ -9,5 +9,6 @@ data class DrawAction(
 
     companion object{
         const val ACTION_UNDO = "ACTION_UNDO"
+        const val ACTION_REDO = "ACTION_REDO"
     }
 }

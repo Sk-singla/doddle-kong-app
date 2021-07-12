@@ -1,12 +1,18 @@
 package com.plcoding.doodlekong.ui.drawing
 
+import android.Manifest
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.os.PersistableBundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.view.Gravity
 import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.View
+import android.widget.Toast
 import androidx.activity.viewModels
 import androidx.appcompat.app.ActionBarDrawerToggle
 import androidx.appcompat.app.AppCompatActivity
@@ -14,27 +20,36 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.GravityCompat
 import androidx.core.view.isVisible
 import androidx.drawerlayout.widget.DrawerLayout
-import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.*
 import androidx.navigation.navArgs
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.snackbar.Snackbar
 import com.plcoding.doodlekong.R
 import com.plcoding.doodlekong.adapters.ChatMessageAdapter
+import com.plcoding.doodlekong.adapters.PlayerAdapter
 import com.plcoding.doodlekong.data.remote.ws.Room
 import com.plcoding.doodlekong.data.remote.ws.models.*
 import com.plcoding.doodlekong.databinding.ActivityDrawingBinding
+import com.plcoding.doodlekong.ui.dialogs.LeaveDialog
 import com.plcoding.doodlekong.util.Constants
+import com.plcoding.doodlekong.util.Constants.MAX_WORD_VOICE_GUESS_AMOUNT
 import com.plcoding.doodlekong.util.hideKeyBoard
 import com.tinder.scarlet.WebSocket
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import pub.devrel.easypermissions.AppSettingsDialog
+import pub.devrel.easypermissions.EasyPermissions
+import java.util.*
 import javax.inject.Inject
 
+private const val REQUEST_CODE_RECORD_AUDIO = 1
+
 @AndroidEntryPoint
-class DrawingActivity: AppCompatActivity() {
+class DrawingActivity: AppCompatActivity(), LifecycleObserver,
+    EasyPermissions.PermissionCallbacks, RecognitionListener {
 
 
     private lateinit var binding: ActivityDrawingBinding
@@ -42,6 +57,8 @@ class DrawingActivity: AppCompatActivity() {
 
     private lateinit var toggle: ActionBarDrawerToggle
     private lateinit var rvPlayers: RecyclerView
+    @Inject
+    lateinit var playerAdapter:PlayerAdapter
 
     @Inject
     lateinit var clientId: String
@@ -50,11 +67,16 @@ class DrawingActivity: AppCompatActivity() {
     private val args: DrawingActivityArgs by navArgs()
 
     private var updateChatJob: Job? = null
+    private var updatePlayersJob: Job? = null
+
+    private lateinit var speechRecognizer: SpeechRecognizer
+    private lateinit var speechIntent: Intent
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityDrawingBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(this)
         subscribeToUiStateUpdates()
         listenToConnectionEvents()
         listenToSocketEvents()
@@ -75,6 +97,12 @@ class DrawingActivity: AppCompatActivity() {
         rvPlayers = header.findViewById(R.id.rvPlayers)
         binding.root.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED)
 
+        rvPlayers.apply {
+            adapter = playerAdapter
+            layoutManager = LinearLayoutManager(this@DrawingActivity)
+        }
+
+
         binding.ibPlayers.setOnClickListener {
             binding.root.setDrawerLockMode(DrawerLayout.LOCK_MODE_UNLOCKED)
             binding.root.openDrawer(GravityCompat.START)
@@ -92,6 +120,41 @@ class DrawingActivity: AppCompatActivity() {
             override fun onDrawerStateChanged(newState: Int) = Unit
         })
 
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        speechIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE,
+                Locale.US
+            )
+
+            putExtra(
+                RecognizerIntent.EXTRA_CALLING_PACKAGE,
+                packageName
+            )
+
+            putExtra(
+                RecognizerIntent.EXTRA_MAX_RESULTS,
+                MAX_WORD_VOICE_GUESS_AMOUNT
+            )
+        }
+        if(SpeechRecognizer.isRecognitionAvailable(this)) {
+            speechRecognizer.setRecognitionListener(this)
+        }
+
+        binding.ibMic.setOnClickListener {
+            if(!viewModel.speechToTextEnabled.value && hasRecordAudioPermission()) {
+                viewModel.startListening()
+            } else if(!viewModel.speechToTextEnabled.value) {
+                requestAudioPermission()
+            } else {
+                viewModel.stopListening()
+            }
+        }
+
         binding.colorGroup.setOnCheckedChangeListener { _, checkedId ->
             viewModel.checkRadioButton(checkedId)
         }
@@ -102,6 +165,9 @@ class DrawingActivity: AppCompatActivity() {
             }
         }
 
+        binding.drawingView.setPathDataChangedListener {
+            viewModel.setPathData(it)
+        }
         binding.ibUndo.setOnClickListener {
             if(binding.drawingView.isUserDrawing) {
                 binding.drawingView.undo()
@@ -109,7 +175,10 @@ class DrawingActivity: AppCompatActivity() {
             }
         }
         binding.ibRedo.setOnClickListener {
-            binding.drawingView.redo()
+            if(binding.drawingView.isUserDrawing) {
+                binding.drawingView.redo()
+                viewModel.sendBaseModel(DrawAction(DrawAction.ACTION_REDO))
+            }
         }
 
         binding.ibClearText.setOnClickListener {
@@ -206,6 +275,44 @@ class DrawingActivity: AppCompatActivity() {
         }
 
         lifecycleScope.launchWhenStarted {
+            viewModel.speechToTextEnabled.collect { isEnabled->
+                if(isEnabled && !SpeechRecognizer.isRecognitionAvailable(this@DrawingActivity)){
+                    Toast.makeText(this@DrawingActivity, R.string.speech_not_available, Toast.LENGTH_SHORT).show()
+                    binding.ibMic.isEnabled = false
+                } else {
+                    setSpeechRecognitionEnabled(isEnabled)
+                }
+            }
+        }
+
+        lifecycleScope.launchWhenStarted {
+            viewModel.players.collect { players->
+                updatePlayersList(players)
+            }
+        }
+
+        lifecycleScope.launchWhenStarted {
+            viewModel.pathData.collect {pathData ->
+                binding.drawingView.setPath(pathData)
+            }
+        }
+
+        lifecycleScope.launchWhenStarted {
+            viewModel.gameState.collect { gameState->
+                binding.apply {
+                    tvCurWord.text = gameState.word
+                    val isUserDrawing = gameState.drawingPlayer == args.username
+                    setColorGroupVisibility(isUserDrawing)
+                    setMessageInputVisibility(!isUserDrawing)
+                    ibUndo.isEnabled = isUserDrawing
+                    drawingView.isUserDrawing = isUserDrawing
+                    ibMic.isVisible = !isUserDrawing
+                    drawingView.isEnabled = isUserDrawing
+                }
+            }
+        }
+
+        lifecycleScope.launchWhenStarted {
             viewModel.phaseTime.collect { time ->
                 binding.roundTimerProgressBar.progress = time.toInt()
                 binding.tvRemainingTimeChooseWord.text = (time / 1000L).toString()
@@ -266,6 +373,20 @@ class DrawingActivity: AppCompatActivity() {
         }
     }
 
+    private fun setColorGroupVisibility(isVisible: Boolean) {
+        binding.colorGroup.isVisible = isVisible
+        binding.ibUndo.isVisible = isVisible
+        binding.ibRedo.isVisible = isVisible
+    }
+
+    private fun setMessageInputVisibility(isVisible: Boolean) {
+        binding.apply {
+            tilMessage.isVisible = isVisible
+            ibSend.isVisible = isVisible
+            ibClearText.isVisible = isVisible
+        }
+    }
+
     private suspend fun addChatObjectToRecyclerView(chatObject: BaseModel) {
         val canScrollDown = binding.rvChat.canScrollVertically(1)
         updateChatMessageList(chatMessageAdapter.chatObjects + chatObject)
@@ -280,6 +401,13 @@ class DrawingActivity: AppCompatActivity() {
             return true
         }
         return super.onOptionsItemSelected(item)
+    }
+
+    private fun updatePlayersList(players: List<PlayerData>) {
+        updatePlayersJob?.cancel()
+        updatePlayersJob = lifecycleScope.launch {
+            playerAdapter.updateDataset(players)
+        }
     }
 
     private fun listenToConnectionEvents() = lifecycleScope.launchWhenStarted {
@@ -336,8 +464,17 @@ class DrawingActivity: AppCompatActivity() {
                         }
                     }
                 }
+                is DrawingViewModel.SocketEvent.RoundDrawInfoEvent -> {
+                    binding.drawingView.update(event.data)
+                }
+                is DrawingViewModel.SocketEvent.GameStateEvent -> {
+                    binding.drawingView.clear()
+                }
                 is DrawingViewModel.SocketEvent.UndoEvent -> {
                     binding.drawingView.undo()
+                }
+                is DrawingViewModel.SocketEvent.RedoEvent -> {
+                    binding.drawingView.redo()
                 }
                 is DrawingViewModel.SocketEvent.ChatMessageEvent -> {
                     addChatObjectToRecyclerView(event.data)
@@ -362,5 +499,93 @@ class DrawingActivity: AppCompatActivity() {
     }
 
 
+    @OnLifecycleEvent(Lifecycle.Event.ON_STOP)
+    private fun onAppInBackground(){
+        viewModel.disconnect()
+    }
 
+    override fun onBackPressed() {
+        LeaveDialog().apply {
+            setPositiveClickListener {
+                viewModel.disconnect()
+                finish()
+            }
+        }.show(supportFragmentManager,null)
+    }
+
+    private fun hasRecordAudioPermission() = EasyPermissions.hasPermissions(
+        this,
+        Manifest.permission.RECORD_AUDIO
+    )
+    private fun requestAudioPermission() {
+        EasyPermissions.requestPermissions(
+            this,
+            getString(R.string.rationale_record_audio),
+            REQUEST_CODE_RECORD_AUDIO,
+            Manifest.permission.RECORD_AUDIO
+        )
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        EasyPermissions.onRequestPermissionsResult(requestCode,permissions,grantResults,this)
+    }
+
+    override fun onPermissionsGranted(requestCode: Int, perms: MutableList<String>) {
+        if(requestCode == REQUEST_CODE_RECORD_AUDIO) {
+            Toast.makeText(this, R.string.speech_to_text_info, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onPermissionsDenied(requestCode: Int, perms: MutableList<String>) {
+        if(EasyPermissions.somePermissionPermanentlyDenied(this,perms)) {
+            AppSettingsDialog.Builder(this).build().show()
+        }
+    }
+
+    override fun onReadyForSpeech(params: Bundle?) {
+        binding.etMessage.text?.clear()
+        binding.etMessage.hint = getString(R.string.listening)
+    }
+
+    private fun setSpeechRecognitionEnabled(isEnabled: Boolean) {
+        if(isEnabled) {
+            binding.ibMic.setImageResource(R.drawable.ic_mic)
+            speechRecognizer.startListening(speechIntent)
+        } else {
+            binding.ibMic.setImageResource(R.drawable.ic_mic_off)
+            binding.etMessage.hint = ""
+            speechRecognizer.stopListening()
+        }
+    }
+
+    override fun onBeginningOfSpeech() = Unit
+
+    override fun onRmsChanged(rmsdB: Float) = Unit
+
+    override fun onBufferReceived(buffer: ByteArray?) = Unit
+
+    override fun onEndOfSpeech() {
+        viewModel.stopListening()
+    }
+
+    override fun onError(error: Int) = Unit
+
+    override fun onResults(results: Bundle?) {
+        val strings = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+        val guessedWords = strings?.joinToString(" ")
+        guessedWords?.let {
+            binding.etMessage.setText(it)
+        }
+        speechRecognizer.stopListening()
+        viewModel.stopListening()
+    }
+
+    override fun onPartialResults(partialResults: Bundle?) = Unit
+
+    override fun onEvent(eventType: Int, params: Bundle?) = Unit
 }

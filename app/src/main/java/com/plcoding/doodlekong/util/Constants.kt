@@ -2,14 +2,16 @@ package com.plcoding.doodlekong.util
 
 object Constants {
 
-    const val USE_LOCALHOST = true
+    const val USE_LOCALHOST = false
 
-    const val HTTP_BASE_URL = ""
+    const val HTTP_BASE_URL = "https://samar-doddlekong.herokuapp.com/"
     const val HTTP_BASE_URL_LOCALHOST = "http://192.168.43.33:8081"
+
     const val RECONNECT_INTERVAL = 3000L
-    const val WS_BASE_URL = ""
+    const val WS_BASE_URL = "https://samar-doddlekong.herokuapp.com/ws/draw"
     const val WS_BASE_URL_LOCALHOST = "http://192.168.43.33:8081/ws/draw"
 
+    const val MAX_WORD_VOICE_GUESS_AMOUNT = 3
 
     const val MIN_USERNAME_LENGTH = 4
     const val MAX_USERNAME_LENGTH = 12
